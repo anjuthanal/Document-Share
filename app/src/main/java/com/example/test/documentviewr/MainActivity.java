@@ -7,13 +7,13 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.AsyncTask;
-import android.os.Build;
+import android.os.Bundle;
 import android.os.Environment;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
 import android.support.v7.app.AppCompatActivity;
-import android.os.Bundle;
 import android.util.Base64;
+import android.util.Base64OutputStream;
 import android.util.Log;
 import android.view.View;
 import android.webkit.MimeTypeMap;
@@ -21,13 +21,18 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
+import android.widget.Toast;
 
 import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLConnection;
 import java.security.SecureRandom;
@@ -48,15 +53,24 @@ public class MainActivity extends AppCompatActivity {
     Button word,excel,pdf,tiff,openoff,mp4,png,jpeg,bmp,gpg,save,share,upload;
     WebView webView;
     Context context;
+    Uri selectedFileUri;
+    private int FILE_SIZE_LIMIT_IN_MB = 10;
 
     private String DOCUMENT_URL = "https://www.acm.org/sigs/publications/pubform.doc";
     private final int REQUEST_WRITE_STORAGE = 1231;
+    private final int REQUEST_READ_FILE  = REQUEST_WRITE_STORAGE + 1;
     private boolean isPermissionAllowed = false;
     private final String SDCARD_PATH = "/sdcard/";
 
-    final String imgUrl = "http://www.iconarchive.com/download/i6151/custom-icon-design/pretty-office-4/JPG.ico";
+    final String imgUrl = "http://www.iconarchive.com/download/i6151/custom-icon-design/" +
+            "pretty-office-4/JPG.ico";
+
+    private String[] supportedFileTypes = {"pdf","mp3","mp4"};
 
     private static final String HTML_FORMAT = "<html><body style=\"text-align: center; background-color: black; vertical-align: center;\"><img src = \"%s\" /></body></html>";
+    private int FILE_REQUEST_CODE = 345;
+    private final String TAG = MainActivity.class.getSimpleName();
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -64,13 +78,13 @@ public class MainActivity extends AppCompatActivity {
         context = this;
 
 
-          webView = (WebView)findViewById(R.id.webview);
-          share = (Button)findViewById(R.id.share);
-          word = (Button)findViewById(R.id.word);
-          png = (Button)findViewById(R.id.png);
-          mp4 = (Button)findViewById(R.id.mp4);
-          jpeg = (Button)findViewById(R.id.jpeg);
-          save = (Button)findViewById(R.id.save);
+        webView = (WebView)findViewById(R.id.webview);
+        share = (Button)findViewById(R.id.share);
+        word = (Button)findViewById(R.id.word);
+        png = (Button)findViewById(R.id.png);
+        mp4 = (Button)findViewById(R.id.mp4);
+        jpeg = (Button)findViewById(R.id.jpeg);
+        save = (Button)findViewById(R.id.save);
         upload = (Button)findViewById(R.id.upload);
 
 
@@ -161,11 +175,14 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onClick(View v) {
 
-
                 Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-                intent.setType("file/*");
-                startActivityForResult(intent, 345);
-
+                intent.setType("*/*");
+                if(intent.resolveActivity(getPackageManager()) != null) {
+                    startActivityForResult(intent, FILE_REQUEST_CODE);
+                } else {
+                    Toast.makeText(MainActivity.this,"No application supports this action",
+                            Toast.LENGTH_LONG).show();
+                }
             }
         });
 
@@ -369,6 +386,16 @@ public class MainActivity extends AppCompatActivity {
                     isPermissionAllowed = false;
                 }
             }
+
+            case REQUEST_READ_FILE:
+                if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+                {
+
+                    getFileData(selectedFileUri);
+                } else
+                {
+                    showReadPermissionError();
+                }
         }
 
     }
@@ -380,5 +407,124 @@ public class MainActivity extends AppCompatActivity {
             type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
         }
         return type;
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+
+        if(requestCode == FILE_REQUEST_CODE && resultCode == RESULT_OK){
+            if(data != null && data.getData() != null ) {
+                boolean hasPermission = (ContextCompat.checkSelfPermission(MainActivity.this,
+                        Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED);
+                if (!hasPermission) {
+                    ActivityCompat.requestPermissions(MainActivity.this,
+                            new String[]{Manifest.permission.READ_EXTERNAL_STORAGE},
+                            REQUEST_READ_FILE);
+                } else {
+                    selectedFileUri = data.getData();
+                    getFileData(selectedFileUri);
+                }
+            } else {
+                showFilePickError();
+            }
+        } else {
+            showFilePickError();
+        }
+    }
+
+    private void getFileData(Uri uri) {
+        if(selectedFileUri != null) {
+            FileUtil fileUtil = new FileUtil(MainActivity.this);
+            String FilePath = fileUtil.getPath(uri);
+            File file = new File(FilePath);
+            // Get the number of bytes in the file
+            long sizeInBytes = file.length();
+            //transform in MB
+            long sizeInMb = sizeInBytes / (1024 * 1024);
+            if(file.exists() && sizeInMb > FILE_SIZE_LIMIT_IN_MB){
+                showFileSizeError();
+            } else if (file.exists()) {
+                try {
+                    String fileType = MimeTypeMap.getFileExtensionFromUrl(file.toURL().toString() );
+                    if(isSupportedMimeTypes(fileType)){
+                        String convertedFile = getStringFile(file);
+                        Log.i(TAG, "getFileData: "+convertedFile);
+                    } else {
+                        Toast.makeText(MainActivity.this,fileType+" Filetype Not supported",Toast.LENGTH_LONG).show();
+                    }
+                } catch (MalformedURLException e) {
+                    e.printStackTrace();
+                }
+                //Log.i(TAG, "onActivityResult: " + getStringFile(file));
+            }
+        } else {
+            showFilePickError();
+        }
+    }
+
+    public String getStringFile(File f) {
+        InputStream inputStream = null;
+        String encodedFile= "", lastVal;
+        try {
+            inputStream = new FileInputStream(f.getAbsolutePath());
+
+            byte[] buffer = new byte[10240];//specify the size to allow
+            int bytesRead;
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            Base64OutputStream output64 = new Base64OutputStream(output, Base64.DEFAULT);
+
+            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                try {
+                    output64.write(buffer, 0, bytesRead);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+            output64.close();
+            encodedFile =  output.toString();
+
+        }
+        catch (FileNotFoundException e1 ) {
+            e1.printStackTrace();
+        }
+        catch (IOException e) {
+            e.printStackTrace();
+        }
+        lastVal = encodedFile;
+        return lastVal;
+    }
+
+
+
+    void showFilePickError(){
+        Toast.makeText(MainActivity.this,"Error while selecting document",
+                Toast.LENGTH_LONG).show();
+    }
+
+    void showReadPermissionError(){
+        Toast.makeText(MainActivity.this,"Permission not granted",
+                Toast.LENGTH_LONG).show();
+
+    }
+
+    void showFileSizeError(){
+        Toast.makeText(MainActivity.this,"Document size should not be more than "+FILE_SIZE_LIMIT_IN_MB+" MB",
+                Toast.LENGTH_LONG).show();
+
+    }
+
+    private boolean isSupportedMimeTypes(String type){
+
+        if(type == null){
+            return  false;
+        }
+
+        for (String supportedFileType : supportedFileTypes) {
+            if (type.equalsIgnoreCase(supportedFileType)) {
+                return true;
+            }
+        }
+        return  false;
     }
 }
